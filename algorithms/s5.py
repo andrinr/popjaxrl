@@ -7,7 +7,6 @@ from jax.nn.initializers import lecun_normal, normal
 from jax import random
 from jax.numpy.linalg import eigh
 
-
 class SequenceLayer(nn.Module):
     """ Defines a single S5 layer, with S5 SSM, nonlinearity, etc.
         Args:
@@ -246,6 +245,7 @@ def binary_operator_reset(q_i, q_j):
     A_i, b_i, c_i = q_i
     A_j, b_j, c_j = q_j
     return (
+        # equates to A_i * c_j if reset flag c_j is true, else normal
         (A_j * A_i)*(1 - c_j) + A_j * c_j,
         (A_j * b_i + b_j)*(1 - c_j) + b_j * c_j,
         c_i * (1 - c_j) + c_j,
@@ -298,10 +298,10 @@ def apply_ssm(Lambda_bar, B_bar, C_tilde, hidden, input_sequence, resets, conj_s
 
 
 class S5SSM(nn.Module):
-    Lambda_re_init: np.DeviceArray
-    Lambda_im_init: np.DeviceArray
-    V: np.DeviceArray
-    Vinv: np.DeviceArray
+    Lambda_re_init: jnp.ndarray
+    Lambda_im_init: jnp.ndarray
+    V: jnp.ndarray
+    Vinv: jnp.ndarray
 
     H: int
     P: int

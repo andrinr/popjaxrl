@@ -37,7 +37,7 @@ def run(num_runs, env_name, arch="gru", file_tag=""):
         "S5_DO_NORM": False,
         "S5_PRENORM": False,
         "S5_DO_GTRXL_NORM": False,
-    }
+    }   
 
     rng = jax.random.PRNGKey(42)
     train_vjit_rnn = jax.jit(jax.vmap(make_train_gru(config)))

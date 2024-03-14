@@ -12,7 +12,6 @@ import functools
 from gymnax.environments import spaces
 import wandb
 
-
 class ScannedRNN(nn.Module):
 
   @functools.partial(
@@ -32,6 +31,9 @@ class ScannedRNN(nn.Module):
 
   @staticmethod
   def initialize_carry(batch_size, hidden_size):
+    print(batch_size)
+    print(hidden_size)
+
     return nn.GRUCell.initialize_carry(
         jax.random.PRNGKey(0), (batch_size,), hidden_size)
 
@@ -41,12 +43,15 @@ class ActorCriticRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
+        # we embedd the observations
         obs, dones = x
+        # Orthogonal initialization helps with the vanishing gradients problem
         embedding = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(obs)
         embedding = nn.leaky_relu(embedding)
         embedding = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(embedding)
         embedding = nn.leaky_relu(embedding)
 
+        # we now pass the embeddings through the rnn
         rnn_in = (embedding, dones)
         hidden, embedding = ScannedRNN()(hidden, rnn_in)
 
@@ -138,33 +143,57 @@ def make_train(config):
 
                 # SELECT ACTION
                 ac_in = (last_obs[np.newaxis, :], last_done[np.newaxis, :])
+                # apply the network and obtain the policy and value
+                # Network is applied and we
+                # hstate: The hidden state of the rnn.
+                # pi: The policy distribution suggested by the network
+                # value: The value function suggested by the network, this kindof predicts the future reward (?)
                 hstate, pi, value = network.apply(train_state.params, hstate, ac_in)
+                # sample action from distribution, where the sampling distribition is obtained from the policy.
+                # The policy in this case is just an array of probabilities for each action
                 action = pi.sample(seed=_rng)
+                # what does tihs do?
                 log_prob = pi.log_prob(action)
+                # some reshaping
                 value, action, log_prob = value.squeeze(0), action.squeeze(0), log_prob.squeeze(0)
 
                 # STEP ENV
+
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+                # we advance the environment by one step, however, we do this for all environments at once
+                # This is the power of this specific architecture, we are able to apply the rnn to all environments at once
+                # the env step function returns:
+                # obsv: This is a ,, meaning that the agent does not have access to the full state of the environment
+                # This also means that past observations are also important to get a better understanding of the environment
+                # env_state: The actual state describing all the information of the environment, this is usually not known to the agent
+                # reward: The reward obtained from the environment
+                # done: A boolean array describing if the environment is done
+                # info: A dictionary containing additional information
                 obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0,None))(
                     rng_step, env_state, action, env_params
                 )
+                # we store the transition in a Transition object, this is kindof the state
                 transition = Transition(last_done, action, value, reward, log_prob, last_obs, info)
                 runner_state = (train_state, env_state, obsv, done, hstate, rng)
                 return runner_state, transition
 
             initial_hstate = runner_state[-2]
+            # This means that we simulate NUM_STEPS for all NUM_ENVS agents 
             runner_state, traj_batch = jax.lax.scan(_env_step, runner_state, None, config["NUM_STEPS"])
 
             # CALCULATE ADVANTAGE
             train_state, env_state, last_obs, last_done, hstate, rng = runner_state
             ac_in = (last_obs[np.newaxis, :], last_done[np.newaxis, :])
+            # We apply a final evaluation of the network to obtain the value of the last state
             _, _, last_val = network.apply(train_state.params, hstate, ac_in)
             last_val = last_val.squeeze(0)
+            # calculate the advantage using the generalized advantage estimation
             def _calculate_gae(traj_batch, last_val, last_done):
                 def _get_advantages(carry, transition):
                     gae, next_value, next_done = carry
                     done, value, reward = transition.done, transition.value, transition.reward 
+                    # delta is pretty much based on Q learning
                     delta = reward + config["GAMMA"] * next_value * (1 - next_done) - value
                     gae = delta + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - next_done) * gae
                     # delta = reward + config["GAMMA"] * next_value - value
